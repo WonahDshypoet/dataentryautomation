@@ -105,6 +105,12 @@ def parse_months_year(months_year_str):
     # Check for TOTAL (case insensitive)
     if 'total' in months_year_str.lower():
         raise ValueError("TOTAL row - skipping")
+    
+        # Handle BACKLOG explicitly
+    if 'backlog' in months_year_str.lower():
+        month_names = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+                       'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+        return [(month, year) for year in range(2015, 2025) for month in month_names]
 
     # Normalize the string to lowercase
     months_year_str = months_year_str.lower()
@@ -176,6 +182,7 @@ def parse_months_year(months_year_str):
     else:
         # Just individual months - use first year found if multiple exist
         return [(m[:3], years[0]) for m in months]
+    
 
 def read_csv(csv_file_path):
     """Read the CSV file and extract relevant data."""
@@ -231,74 +238,7 @@ def main():
     for data in data_list:
         print(data)
 
-    batch_updates = {}
-
-    worksheet_data_cache = {}
-    worksheet_list = sheet_obj.worksheets()
-    for worksheet in worksheet_list:
-        worksheet_data_cache[worksheet.title] = batch_read_worksheet(worksheet)
-
-    for data in data_list:
-        shop_name, amount_paid, month_year_pairs = data
-        for month, year_paid in month_year_pairs:
-            floor_info_match = shop_name[1]
-            if floor_info_match == "1":
-                floor_category = "UPPER"
-            elif floor_info_match == "2":
-                floor_category = "ENTRANCE"
-            elif floor_info_match == "3":
-                floor_category = "FIRST"
-            elif floor_info_match == "4":
-                floor_category = "SECOND"
-            else:
-                print(f"Error: Invalid shop name format. Unknown floor category for {shop_name}")
-                continue
-            sheet_name = f"{floor_category} {year_paid}"
-            if sheet_name not in worksheet_data_cache:
-                print(f"Error: Sheet {sheet_name} not found.")
-                continue
-
-            worksheet_data = worksheet_data_cache[sheet_name]
-            row_index = find_shop_row(worksheet_data, shop_name, sheet_name)
-            if row_index is None:
-                print(f"Error: Could not find row for {shop_name} in {sheet_name}")
-                continue
-
-            amount_per_month = amount_paid / len(month_year_pairs)
-            column_index = month_to_column.get(month.lower())
-            if column_index is None:
-                print(f"Error: Invalid column index for {shop_name} in {sheet_name}")
-                continue
-
-            max_rows = len(worksheet_data)
-            max_columns = len(worksheet_data[0])
-            column_index_num = gspread.utils.a1_to_rowcol(column_index + '1')[1]
-            if row_index > max_rows or column_index_num > max_columns:
-                print(f"Error: Cell {column_index}{row_index} exceeds sheet limits.")
-                continue
-
-            cell_label = f"{column_index}{row_index}"
-            if sheet_name not in batch_updates:
-                batch_updates[sheet_name] = []
-            batch_updates[sheet_name].append({
-                'range': cell_label,
-                'values': [[amount_per_month]]
-            })
-            print(f"Updating cell {cell_label} with value {amount_per_month}")
-        time.sleep(1)
-
-    print("Preparing batch updates...")
-    for sheet_name, updates in batch_updates.items():
-        if updates:
-            request_body = {
-                'valueInputOption': 'USER_ENTERED',
-                'data': [{'range': update['range'], 'values': update['values']} for update in updates]
-            }
-            print(f"Batch updating sheet {sheet_name} with {len(updates)} updates.")
-            sheet_obj.worksheet(sheet_name).batch_update(request_body)
-            print(f"Batch update completed for {sheet_name}.")
-        else:
-            print(f"No valid data to update for {sheet_name}.")'''
+    '''
             
     if not credentials_path:
         print("❌ Error: Could not find credentials_path")
@@ -328,8 +268,6 @@ def main():
         
     csv_file_path = os.path.abspath("08-03-25 - Sheet1.csv")
     data_list = read_csv(csv_file_path)
-    for data in data_list:
-        print(data)
         
     # TEST 2: Focused test for shop finding (Point 3)
     print("\n🔍 Testing Shop Finding Logic:")
@@ -378,12 +316,85 @@ def main():
             print(f"   Cell Value: '{sheet_data[row_idx-1][col_idx-1]}'")
         else:
             print("❌ Position not found")
+        
+ # Cache all worksheet data for efficient access
+    worksheet_cache = {}
+    for sheet in worksheet_list:
+        worksheet_cache[sheet.title] = batch_read_worksheet(sheet)
 
+    # For each shop, find the row and column, then prepare the batch update
+    batch_updates = {}  # This will hold all batch update requests
+    for shop_name, amount_paid, month_year_pairs in data_list:
+        floor_info = shop_name[1]  # Example: "A101" -> "1"
+        floor_map = {
+            "1": "UPPER",
+            "2": "ENTRANCE",
+            "3": "FIRST",
+            "4": "SECOND"
+        }
+        floor_category = floor_map.get(floor_info, "UNKNOWN")
+        
+        # Get most recent year from month_year_pairs
+        if not month_year_pairs:
+            print(f"⚠️ No month/year data for {shop_name} - skipping")
+            continue
+            
+        year = month_year_pairs[0][1]  # Get year from first month-year pair
+        sheet_name = f"{floor_category} {year}"
+        
+        print(f"\n🛍️ Shop: {shop_name} (Searching in '{sheet_name}')")
+        
+        if sheet_name not in worksheet_cache:
+            print(f"❌ Sheet '{sheet_name}' not found")
+            continue
+            
+        sheet_data = worksheet_cache[sheet_name]
+        col_idx = find_shop_name_column(sheet_data, sheet_name)
+        row_idx = find_shop_row(sheet_data, shop_name, sheet_name)
+        
+        if col_idx and row_idx:
+            # Find column index for the month in question (using your month_to_column mapping)
+            for month, year_paid in month_year_pairs:
+                column_index = month_to_column.get(month.lower())
+                if column_index is None:
+                    print(f"❌ Invalid month '{month}' for {shop_name} in {sheet_name}")
+                    continue
+
+                # Calculate the payment amount for the month
+                amount_per_month = amount_paid / len(month_year_pairs)
+                
+                # Find the cell where we need to update the value
+                cell_label = f"{column_index}{row_idx}"  # Example: "AM12"
+                
+                if sheet_name not in batch_updates:
+                    batch_updates[sheet_name] = []
+                    
+                batch_updates[sheet_name].append({
+                    'range': cell_label,
+                    'values': [[amount_per_month]]
+                })
+                print(f"Preparing to update cell {cell_label} with value {amount_per_month}")
+        
+        else:
+            print("❌ Shop not found")
+
+    # Execute the batch update for each sheet
+    print("📤 Executing batch updates...")
+    for sheet_name, updates in batch_updates.items():
+        if updates:
+            request_body = {
+                'valueInputOption': 'USER_ENTERED',
+                'data': [{'range': update['range'], 'values': update['values']} for update in updates]
+            }
+            print(f"Batch updating sheet {sheet_name} with {len(updates)} updates.")
+            try:
+                sheet_obj.worksheet(sheet_name).batch_update(request_body)
+                print(f"✅ Batch update completed for {sheet_name}.")
+            except Exception as e:
+                print(f"❌ Failed to update sheet {sheet_name}: {e}")
+        else:
+            print(f"⚠️ No valid data to update for {sheet_name}.")
+            
 if __name__ == "__main__":
     main()
 
-"""
-Features to add:
-- Backlog payment will pay from 2015 up to 2024 
-- Bring out the errors encountered in code (i.e errors like no year, invalid number of columns, e.t.c)
-"""
