@@ -3,8 +3,10 @@ import os
 from os import environ, path
 import time
 import csv
+import random
 import re
 from gspread.exceptions import APIError
+from functools import wraps
 
 
 # Access google sheets
@@ -19,30 +21,41 @@ month_to_column = {
 }
 
 
-def exponential_backoff(func):
+def exponential_backoff(func=None, *, retries=5, base_delay=3, max_delay=30, post_success_delay=2):
+    if func is None:
+        return lambda f: exponential_backoff(
+            f, retries=retries, base_delay=base_delay, max_delay=max_delay, post_success_delay=post_success_delay
+        )
+
+    @wraps(func)
     def wrapper(*args, **kwargs):
-        max_attempts = 5
         attempt = 0
-        while attempt < max_attempts:
+        delay = base_delay
+        while attempt < retries:
             try:
-                return func(*args, **kwargs)
-            except APIError as e:
-                if 'Quota exceeded' in str(e):
-                    sleep_time = 2 ** attempt
-                    print(f"Quota exceeded. Retrying in {sleep_time} seconds...")
-                    time.sleep(sleep_time)
-                    attempt += 1
+                result = func(*args, **kwargs)
+                # Random jitter to avoid collision bursts
+                time.sleep(post_success_delay + random.uniform(0.5, 2))
+                return result
+            except Exception as e:
+                print(f"⚠️ {func.__name__} failed on attempt {attempt + 1}: {e}")
+                attempt += 1
+                if attempt < retries:
+                    jitter = random.uniform(0.5, 1.5)
+                    time.sleep(min(delay, max_delay) + jitter)
+                    delay *= 2  # exponential growth
                 else:
-                    raise e
-        raise Exception("Max retries exceeded.")
+                    raise Exception("Max retries exceeded.")
     return wrapper
 
 
-@exponential_backoff
-def batch_read_worksheet(worksheet):
-    """Reads the entire worksheet into a local cache."""
-    data = worksheet.get_all_values()
-    return data
+@exponential_backoff(base_delay=3, post_success_delay=2)
+def batch_read_worksheet(sheet):
+    return sheet.get_all_values()
+
+@exponential_backoff(base_delay=3, post_success_delay=2)
+def batch_update_sheet(sheet, request_body):
+    sheet.batch_update(request_body)
 
 
 def find_shop_name_column(worksheet_data, sheet_name):
@@ -225,20 +238,6 @@ def read_csv(csv_file_path):
 
 
 def main():
-    '''if not credentials_path:
-        print("Error: Could not find credentials_path")
-        return
-
-    gc = gspread.service_account(filename=credentials_path)
-    sheet_obj = gc.open_by_key(spreadsheet_key)
-    print("Successfully connected to Google Sheet")
-
-    csv_file_path = os.path.abspath("new-test - Sheet1.csv")
-    data_list = read_csv(csv_file_path)
-    for data in data_list:
-        print(data)
-
-    '''
             
     if not credentials_path:
         print("❌ Error: Could not find credentials_path")
@@ -260,9 +259,10 @@ def main():
 
     try:
         worksheet_list = sheet_obj.worksheets()
-        print("📄 Found the following worksheets:")
+        ''' print("📄 Found the following worksheets:")
         for sheet in worksheet_list:
-            print(f" - {sheet.title}")
+            print(f" - {sheet.title}
+        '''
     except Exception as e:
         print(f"❌ Failed to read worksheets: {e}")
         
@@ -317,8 +317,10 @@ def main():
         else:
             print("❌ Position not found")
         
+        
+    
  # Cache all worksheet data for efficient access
-    worksheet_cache = {}
+
     for sheet in worksheet_list:
         worksheet_cache[sheet.title] = batch_read_worksheet(sheet)
 
@@ -361,17 +363,86 @@ def main():
                     continue
 
                 # Calculate the payment amount for the month
-                amount_per_month = amount_paid / len(month_year_pairs)
+                amount_per_month = int(round(amount_paid / len(month_year_pairs)))
+                
+                # Special case: BACKLOG
+                is_backlog = month_year_pairs[0][0].lower() == "backlog"
+                if is_backlog:
+                    print(f"🔁 Handling BACKLOG for {shop_name}")
+
+                    total_inserted = 0
+                    for year in range(2015, 2025):  
+                        sheet_name = f"{floor_category} {year}"
+                        if sheet_name not in worksheet_cache:
+                            print(f"❌ Sheet '{sheet_name}' not found for backlog year {year}")
+                            continue
+
+                        sheet_data = worksheet_cache[sheet_name]
+                        col_idx = find_shop_name_column(sheet_data, sheet_name)
+                        row_idx = find_shop_row(sheet_data, shop_name, sheet_name)
+
+                        if not col_idx or not row_idx:
+                            print(f"❌ Could not find position for {shop_name} in {sheet_name}")
+                            continue
+
+                        # Get amount from header
+                        header_value = sheet_data[0][col_idx - 1]
+                        try:
+                            amount_in_header = float(header_value.split('=')[-1].strip())
+                        except:
+                            print(f"⚠️ Invalid header format for {sheet_name}: {header_value}")
+                            continue
+
+                        # Loop through all months in order until one empty cell is found
+                        for month, col_letter in month_to_column.items():
+                            column_index = gspread.utils.a1_range_to_grid_range(f"{col_letter}1")["startColumnIndex"]
+                            try:
+                                existing_val = sheet_data[row_idx - 1][column_index]
+                            except IndexError:
+                                continue
+
+                            if str(existing_val).strip() == "":
+                                # Fill this cell
+                                cell_label = f"{col_letter}{row_idx}"
+                                if sheet_name not in batch_updates:
+                                    batch_updates[sheet_name] = []
+
+                                batch_updates[sheet_name].append({
+                                    'range': cell_label,
+                                    'values': [[int(round(amount_in_header))]]
+                                })
+                                total_inserted += amount_in_header
+                                print(f"✅ Filled {cell_label} with {amount_in_header} (Inserted: {total_inserted} / {amount_paid})")
+
+                                break  # Only one payment per year
+
+                        if total_inserted >= amount_paid:
+                            print(f"✅ BACKLOG cleared for {shop_name} with {total_inserted}")
+                            break
+
+                    if total_inserted < amount_paid:
+                        print(f"⚠️ Not enough unpaid months found for {shop_name}. Inserted only {total_inserted} out of {amount_paid}")
+
+                    continue 
                 
                 # Find the cell where we need to update the value
                 cell_label = f"{column_index}{row_idx}"  # Example: "AM12"
+                
+                # Check if the cell is already filled
+                try:
+                    existing_value = sheet_data[row_idx - 1][gspread.utils.a1_range_to_grid_range(cell_label)['startColumnIndex']]
+                    if str(existing_value).strip() != '':
+                        print(f"🔁 Cell {cell_label} already filled. Skipping.")
+                        continue
+                except IndexError:
+                    print(f"⚠️ Could not check value at {cell_label} (index out of bounds)")
                 
                 if sheet_name not in batch_updates:
                     batch_updates[sheet_name] = []
                     
                 batch_updates[sheet_name].append({
                     'range': cell_label,
-                    'values': [[amount_per_month]]
+                    'values': [[int(round(amount_per_month))]]
                 })
                 print(f"Preparing to update cell {cell_label} with value {amount_per_month}")
         
