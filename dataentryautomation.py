@@ -5,7 +5,6 @@ import time
 import csv
 import random
 import re
-from gspread.exceptions import APIError
 from functools import wraps
 
 
@@ -316,8 +315,6 @@ def main():
             print(f"   Cell Value: '{sheet_data[row_idx-1][col_idx-1]}'")
         else:
             print("❌ Position not found")
-        
-        
     
  # Cache all worksheet data for efficient access
 
@@ -361,9 +358,6 @@ def main():
                 if column_index is None:
                     print(f"❌ Invalid month '{month}' for {shop_name} in {sheet_name}")
                     continue
-
-                # Calculate the payment amount for the month
-                amount_per_month = int(round(amount_paid / len(month_year_pairs)))
                 
                 # Special case: BACKLOG
                 is_backlog = month_year_pairs[0][0].lower() == "backlog"
@@ -425,6 +419,9 @@ def main():
 
                     continue 
                 
+                # Calculate the payment amount for the month
+                amount_per_month = int(round(amount_paid / len(month_year_pairs)))
+                
                 # Find the cell where we need to update the value
                 cell_label = f"{column_index}{row_idx}"  # Example: "AM12"
                 
@@ -459,7 +456,7 @@ def main():
             }
             print(f"Batch updating sheet {sheet_name} with {len(updates)} updates.")
             try:
-                sheet_obj.worksheet(sheet_name).batch_update(request_body)
+                sheet_obj.batch_update(request_body)
                 print(f"✅ Batch update completed for {sheet_name}.")
             except Exception as e:
                 print(f"❌ Failed to update sheet {sheet_name}: {e}")
