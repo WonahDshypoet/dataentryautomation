@@ -609,21 +609,16 @@ def main():
     # ✅ Perform batch updates
     print("📤 Executing batch updates...")
     for sheet_name, updates in batch_updates.items():
-        if not updates:
-            print(f"⚠️ No updates for {sheet_name}")
-            continue
-
-        request_body = {
-            "data": updates,
-            "valueInputOption": "USER_ENTERED"
-        }
-
-        print(f"Batch updating sheet {sheet_name} with {len(updates)} updates.")
-        try:
-            sheet_obj.batch_update(request_body)
-            print(f"✅ Batch update completed for {sheet_name}.")
-        except Exception as e:
-            print(f"❌ Failed to update sheet {sheet_name}: {e}")
+        if updates:
+            print(f"Batch updating sheet {sheet_name} with {len(updates)} updates.")
+            try:
+                worksheet = sheet_obj.worksheet(sheet_name)
+                worksheet.batch_update(updates)  # Just pass the list of update dicts directly
+                print(f"✅ Batch update completed for {sheet_name}.")
+            except Exception as e:
+                print(f"❌ Failed to update sheet {sheet_name}: {e}")
+        else:
+            print(f"⚠️ No valid data to update for {sheet_name}.")
    
 if __name__ == "__main__":
     main()
