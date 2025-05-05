@@ -236,6 +236,12 @@ def read_csv(csv_file_path):
     return data_list
 
 
+def safe_cell_value(data, row, col):
+    if 0 <= row < len(data) and 0 <= col < len(data[row]):
+        return data[row][col]
+    return None
+
+'''
 def main():
             
     if not credentials_path:
@@ -258,10 +264,10 @@ def main():
 
     try:
         worksheet_list = sheet_obj.worksheets()
-        ''' print("📄 Found the following worksheets:")
+    
+        print("📄 Found the following worksheets:")
         for sheet in worksheet_list:
             print(f" - {sheet.title}
-        '''
     except Exception as e:
         print(f"❌ Failed to read worksheets: {e}")
         
@@ -439,30 +445,186 @@ def main():
                     
                 batch_updates[sheet_name].append({
                     'range': cell_label,
-                    'values': [[int(round(amount_per_month))]]
+                    'values': [amount_per_month]
                 })
                 print(f"Preparing to update cell {cell_label} with value {amount_per_month}")
         
         else:
             print("❌ Shop not found")
 
-    # Execute the batch update for each sheet
+        # Execute the batch update for each sheet
+        print("📤 Executing batch updates...")
+        for sheet_name, updates in batch_updates.items():
+            if updates:
+                request_body = {
+                    'data': [{'range': update['range'], 'values': update['values']} for update in updates],
+                    'value_input_option': 'USER_ENTERED',
+                }
+                print(f"Batch updating sheet {sheet_name} with {len(updates)} updates.")
+                try:
+                    worksheet = sheet_obj.worksheet(sheet_name)
+                    worksheet.batch_update(request_body)
+                    print(f"✅ Batch update completed for {sheet_name}.")
+                except Exception as e:
+                    print(f"❌ Failed to update sheet {sheet_name}: {e}")
+            else:
+                print(f"⚠️ No valid data to update for {sheet_name}.")
+                
+            '''     
+            
+def main():
+    if not credentials_path:
+        print("❌ Error: Could not find credentials_path")
+        return
+
+    try:
+        gc = gspread.service_account(filename=credentials_path)
+        print("✅ Successfully authenticated with Google Sheets API.")
+    except Exception as e:
+        print(f"❌ Failed to authenticate: {e}")
+        return
+
+    try:
+        sheet_obj = gc.open_by_key(spreadsheet_key)
+        print(f"✅ Successfully opened the spreadsheet: {sheet_obj.title}")
+    except Exception as e:
+        print(f"❌ Failed to open spreadsheet: {e}")
+        return
+
+    try:
+        worksheet_list = sheet_obj.worksheets()
+    except Exception as e:
+        print(f"❌ Failed to read worksheets: {e}")
+        return
+
+    csv_file_path = os.path.abspath("08-03-25 - Sheet1.csv")
+    data_list = read_csv(csv_file_path)
+
+    worksheet_cache = {sheet.title: batch_read_worksheet(sheet) for sheet in worksheet_list}
+
+    batch_updates = {}
+    floor_map = {
+        "1": "UPPER",
+        "2": "ENTRANCE",
+        "3": "FIRST",
+        "4": "SECOND"
+    }
+
+    for shop_name, amount_paid, month_year_pairs in data_list:
+        if not month_year_pairs:
+            print(f"⚠️ No month/year data for {shop_name} - skipping")
+            continue
+
+        floor_info = shop_name[1]
+        floor_category = floor_map.get(floor_info, "UNKNOWN")
+        year = month_year_pairs[0][1]
+        sheet_name = f"{floor_category} {year}"
+
+        print(f"\n🛍️ Shop: {shop_name} (Searching in '{sheet_name}')")
+
+        if sheet_name not in worksheet_cache:
+            print(f"❌ Sheet '{sheet_name}' not found")
+            continue
+
+        sheet_data = worksheet_cache[sheet_name]
+        col_idx = find_shop_name_column(sheet_data, sheet_name)
+        row_idx = find_shop_row(sheet_data, shop_name, sheet_name)
+
+        if not col_idx or not row_idx:
+            print("❌ Shop not found")
+            continue
+
+        is_backlog = month_year_pairs[0][0].lower() == "backlog"
+
+        if is_backlog:
+            print(f"🔁 Handling BACKLOG for {shop_name}")
+            total_inserted = 0
+
+            for backlog_year in range(2015, 2025):
+                backlog_sheet = f"{floor_category} {backlog_year}"
+                if backlog_sheet not in worksheet_cache:
+                    print(f"❌ Sheet '{backlog_sheet}' not found for backlog year {backlog_year}")
+                    continue
+
+                data = worksheet_cache[backlog_sheet]
+                col = find_shop_name_column(data, backlog_sheet)
+                row = find_shop_row(data, shop_name, backlog_sheet)
+
+                if not col or not row:
+                    print(f"❌ Could not find position for {shop_name} in {backlog_sheet}")
+                    continue
+
+                header_val = safe_cell_value(data, 0, col - 1)
+                try:
+                    amount_in_header = float(header_val.split('=')[-1].strip())
+                except:
+                    print(f"⚠️ Invalid header format for {backlog_sheet}: {header_val}")
+                    continue
+
+                for month, col_letter in month_to_column.items():
+                    col_index = gspread.utils.a1_range_to_grid_range(f"{col_letter}1")["startColumnIndex"]
+                    existing = safe_cell_value(data, row - 1, col_index)
+
+                    if str(existing).strip() == "":
+                        cell_label = f"{col_letter}{row}"
+                        batch_updates.setdefault(backlog_sheet, []).append({
+                            'range': cell_label,
+                            'values': [[int(round(amount_in_header))]]
+                        })
+                        total_inserted += amount_in_header
+                        print(f"✅ Filled {cell_label} with {amount_in_header} (Inserted: {total_inserted})")
+                        break  # One payment per year
+
+                if total_inserted >= amount_paid:
+                    print(f"✅ BACKLOG cleared for {shop_name} with {total_inserted}")
+                    break
+
+            if total_inserted < amount_paid:
+                print(f"⚠️ Not enough unpaid months found for {shop_name}. Inserted {total_inserted} out of {amount_paid}")
+            continue  # Done with backlog
+
+        # Normal case
+        amount_per_month = int(round(amount_paid / len(month_year_pairs)))
+
+        for month, year_paid in month_year_pairs:
+            col_letter = month_to_column.get(month.lower())
+            if not col_letter:
+                print(f"❌ Invalid month '{month}' for {shop_name}")
+                continue
+
+            cell_label = f"{col_letter}{row_idx}"
+            col_index = gspread.utils.a1_range_to_grid_range(cell_label)['startColumnIndex']
+            existing_val = safe_cell_value(sheet_data, row_idx - 1, col_index)
+
+            if existing_val is not None and str(existing_val).strip() != "":
+                print(f"🔁 Cell {cell_label} already filled. Skipping.")
+                continue
+
+            batch_updates.setdefault(sheet_name, []).append({
+                'range': cell_label,
+                'values': [[amount_per_month]]
+            })
+            print(f"Preparing to update cell {cell_label} with value {amount_per_month}")
+
+    # ✅ Perform batch updates
     print("📤 Executing batch updates...")
     for sheet_name, updates in batch_updates.items():
-        if updates:
-            request_body = {
-                'valueInputOption': 'USER_ENTERED',
-                'data': [{'range': update['range'], 'values': update['values']} for update in updates]
-            }
-            print(f"Batch updating sheet {sheet_name} with {len(updates)} updates.")
-            try:
-                sheet_obj.batch_update(request_body)
-                print(f"✅ Batch update completed for {sheet_name}.")
-            except Exception as e:
-                print(f"❌ Failed to update sheet {sheet_name}: {e}")
-        else:
-            print(f"⚠️ No valid data to update for {sheet_name}.")
-            
+        if not updates:
+            print(f"⚠️ No updates for {sheet_name}")
+            continue
+
+        request_body = {
+            "data": updates,
+            "valueInputOption": "USER_ENTERED"
+        }
+
+        print(f"Batch updating sheet {sheet_name} with {len(updates)} updates.")
+        try:
+            sheet_obj.batch_update(request_body)
+            print(f"✅ Batch update completed for {sheet_name}.")
+        except Exception as e:
+            print(f"❌ Failed to update sheet {sheet_name}: {e}")
+   
 if __name__ == "__main__":
     main()
 
