@@ -72,7 +72,6 @@ def find_shop_name_column(worksheet_data, sheet_name):
 
     # Check for Entrance sheet and handle leading space
     sheet_name = sheet_name.upper()  # Get and uppercase sheet name
-    print(f"Sheet name: {sheet_name}")
 
     # Remove leading/trailing spaces from headers for comparison
     header_row = [header.strip().upper() for header in header_row]
@@ -265,7 +264,7 @@ def main():
         print(f"❌ Failed to read worksheets: {e}")
         return
 
-    csv_file_path = os.path.abspath("171821-02-25 - Sheet1.csv")
+    csv_file_path = os.path.abspath("16-06-25 - Sheet1.csv")
     data_list = read_csv(csv_file_path)
 
     worksheet_cache = {sheet.title: batch_read_worksheet(sheet) for sheet in worksheet_list}
